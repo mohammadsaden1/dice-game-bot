@@ -186,10 +186,9 @@ WEB_APP_HTML = """
 </html>
 """
 
-# --- متغیرهای سراسری برای مدیریت پیام‌ها به ادمین ---
-bot_application = None
-
 # --- تلگرام بات ---
+telegram_app = None
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_balance(user.id)
@@ -308,49 +307,38 @@ def api_withdraw():
 
     update_balance(user_id, -amount)
     
-    # ارسال پیام به ادمین به صورت امن
-    if bot_application:
-        asyncio.run_coroutine_threadsafe(
-            bot_application.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=f"💵 **درخواست برداشت**\nکاربر: `{user_id}`\nمبلغ: {int(amount):,} تومان\nکارت: `{card}`",
-                parse_mode="Markdown"
-            ),
-            bot_application.bot_data.get("loop")
-        )
+    # ارسال پیام به ادمین به صورت همگام با تلگرام
+    if telegram_app:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                telegram_app.bot.send_message(
+                    chat_id=ADMIN_USER_ID,
+                    text=f"💵 **درخواست برداشت**\nکاربر: `{user_id}`\nمبلغ: {int(amount):,} تومان\nکارت: `{card}`",
+                    parse_mode="Markdown"
+                ),
+                telegram_app.loop
+            )
+        except Exception:
+            pass
 
     return jsonify({'msg': 'درخواست برداشت ثبت شد.'})
 
 def run_flask():
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, use_reloader=False)
 
-async def main_async():
-    global bot_application
-    bot_application = Application.builder().token(TOKEN).build()
-    
-    # ذخیره لوپ در bot_data برای دسترسی امن از وب‌سرور
-    bot_application.bot_data["loop"] = asyncio.get_running_loop()
+def main():
+    global telegram_app
+    telegram_app = Application.builder().token(TOKEN).build()
 
-    bot_application.add_handler(CommandHandler("start", start))
-    bot_application.add_handler(CallbackQueryHandler(admin_approve, pattern="^dep_acc_"))
-    bot_application.add_handler(MessageHandler(filters.PHOTO, receive_receipt))
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CallbackQueryHandler(admin_approve, pattern="^dep_acc_"))
+    telegram_app.add_handler(MessageHandler(filters.PHOTO, receive_receipt))
 
     # اجرای وب‌سرور در پس‌زمینه
     threading.Thread(target=run_flask, daemon=True).start()
 
-    await bot_application.initialize()
-    await bot_application.start()
-    await bot_application.updater.start_polling()
-    
-    # نگه داشتن ربات روشن
-    stop_event = asyncio.Event()
-    await stop_event.wait()
-
-def main():
-    try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        pass
+    # شروع کار ربات تلگرام به روش استاندارد
+    telegram_app.run_polling()
 
 if __name__ == "__main__":
     main()
