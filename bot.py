@@ -1,6 +1,7 @@
 import sqlite3
 import random
 import threading
+import asyncio
 from flask import Flask, request, jsonify, render_template_string
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -185,6 +186,9 @@ WEB_APP_HTML = """
 </html>
 """
 
+# --- متغیرهای سراسری برای مدیریت پیام‌ها به ادمین ---
+bot_application = None
+
 # --- تلگرام بات ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -203,7 +207,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['deposit_amount'] = amount
         return
 
-    # توجه: لینک مینی‌اپ بعد از دیپلوی روی Render جایگزین می‌شود
+    # لینک مینی‌اپ بعد از دیپلوی روی Render
     keyboard = [[InlineKeyboardButton("🎮 باز کردن مینی‌اپ بازی تاس", web_app={"url": "https://YOUR-RENDER-URL.onrender.com"})]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -247,8 +251,6 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- وب‌سرور فلاسک ---
 app = Flask(__name__)
-app_telegram = None
-loop = None
 
 @app.route('/')
 def index():
@@ -306,32 +308,49 @@ def api_withdraw():
 
     update_balance(user_id, -amount)
     
-    import asyncio
-    asyncio.run_coroutine_threadsafe(
-        app_telegram.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=f"💵 **درخواست برداشت**\nکاربر: `{user_id}`\nمبلغ: {int(amount):,} تومان\nکارت: `{card}`",
-            parse_mode="Markdown"
-        ),
-        loop
-    )
+    # ارسال پیام به ادمین به صورت امن
+    if bot_application:
+        asyncio.run_coroutine_threadsafe(
+            bot_application.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"💵 **درخواست برداشت**\nکاربر: `{user_id}`\nمبلغ: {int(amount):,} تومان\nکارت: `{card}`",
+                parse_mode="Markdown"
+            ),
+            bot_application.bot_data.get("loop")
+        )
+
     return jsonify({'msg': 'درخواست برداشت ثبت شد.'})
 
 def run_flask():
     app.run(host='0.0.0.0', port=5000)
 
-def main():
-    global loop, app_telegram
-    import asyncio
-    loop = asyncio.get_event_loop()
+async def main_async():
+    global bot_application
+    bot_application = Application.builder().token(TOKEN).build()
+    
+    # ذخیره لوپ در bot_data برای دسترسی امن از وب‌سرور
+    bot_application.bot_data["loop"] = asyncio.get_running_loop()
 
-    app_telegram = Application.builder().token(TOKEN).build()
-    app_telegram.add_handler(CommandHandler("start", start))
-    app_telegram.add_handler(CallbackQueryHandler(admin_approve, pattern="^dep_acc_"))
-    app_telegram.add_handler(MessageHandler(filters.PHOTO, receive_receipt))
+    bot_application.add_handler(CommandHandler("start", start))
+    bot_application.add_handler(CallbackQueryHandler(admin_approve, pattern="^dep_acc_"))
+    bot_application.add_handler(MessageHandler(filters.PHOTO, receive_receipt))
 
+    # اجرای وب‌سرور در پس‌زمینه
     threading.Thread(target=run_flask, daemon=True).start()
-    app_telegram.run_polling()
+
+    await bot_application.initialize()
+    await bot_application.start()
+    await bot_application.updater.start_polling()
+    
+    # نگه داشتن ربات روشن
+    stop_event = asyncio.Event()
+    await stop_event.wait()
+
+def main():
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        pass
 
 if __name__ == "__main__":
     main()
